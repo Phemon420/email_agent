@@ -1,5 +1,6 @@
 from package import *
 from function import *
+from model import *
 
 load_dotenv()
 
@@ -12,6 +13,8 @@ SCOPES = [  # Define the scopes (permissions) for Google OAuth2
     "https://www.googleapis.com/auth/gmail.send"  # Permission to send emails via Gmail API
 ]
 REDIRECT_URI = os.environ.get("REDIRECT_URI")  # Fetch the redirect URI from environment variables (used for OAuth2 callback)
+config_key_jwt = os.environ.get("config_key_jwt")
+config_token_expire_sec = float(os.environ.get("config_token_expire_sec"))
 
 # Home route
 @router.get("/")
@@ -56,6 +59,11 @@ async def oauth2callback(request: Request):
     flow.fetch_token(code=code)
     # Get credentials object containing token details
     creds = flow.credentials
+    
+    # Print all credentials attributes for debugging
+    # print("=== Credentials Debug Info ===")
+    # print(f"All attributes: {dir(creds)}")
+    # print("==============================")
 
     # Fetch user info from Google using the access token
     user_info = await get_google_user_info(creds.token)
@@ -84,17 +92,68 @@ async def oauth2callback(request: Request):
         "client_id": creds.client_id,  # OAuth2 client ID
         "client_secret": creds.client_secret,  # OAuth2 client secret
         "scopes": scopes_value,  # List of granted scopes
-        "expiry": creds.expiry  # Token expiry timestamp
+        "expiry": creds.expiry,  # Token expiry timestamp
+        "id_token": creds.id_token
     }
     
     # Save the token and user info into the 'users' table in PostgreSQL using asyncpg client
-    await function_object_create_postgres_asyncpg(request.app.state.client_postgres_asyncpg, "users", token_data)
+    #await function_object_create_postgres_asyncpg(request.app.state.client_postgres_asyncpg, "users", token_data)
+
+    #save the new user and update the existing user data in db
+    data=await function_object_upsert_postgres_asyncpg(
+        request.app.state.client_postgres_asyncpg, 
+        "users", 
+        token_data, 
+        "email"  # email is the conflict column (unique identifier)
+    )
     
+
+    # Generate a JWT token for the user
+    token = await function_token_encode(config_key_jwt,config_token_expire_sec,data[0],request.app.state.config_token_user_key_list)
+    # print("JWT Token:", token)
     # Return an HTML response confirming successful authorization and database storage
-    return HTMLResponse(f"""
-        Authorization successful!
-        <br>Welcome, {user_info.get('name')} ({user_info.get('email')})!
-        <br>Token and user info saved to database. You can now send emails.
-    """)
+    return {"status": 1,"token": token}
     # Alternative response (commented out): simple success message
     # return HTMLResponse("Authorization successful! Token saved to database. You can now send emails.")
+
+
+
+@router.post("/talk_with_ai_stream")
+async def stream_request(request: Request, body: Message):
+    try:
+        sender_email = request.state.user["email"]
+        recipient_emails = body.recipient
+        context = body.content
+
+        prompt = f"Generate a professional email from {sender_email} to {', '.join(recipient_emails)} with the following context: {context}"
+        
+        return await stream_ai_response_to_frontend(request.app.state.client_gemini, prompt)
+        
+    except Exception as e:
+        print("Streaming error:", e)
+        return {"success": False, "error": str(e)}
+
+@router.post("/send_email")
+async def send_email(request:Request,body:Email):
+    try:
+        print("i am here")
+        sender_email = request.state.user["email"]
+        recipient_email = body.recipient
+        subject = body.subject
+        body = body.body
+
+        print("Sender Email:", sender_email)
+
+        #Call the function to send email using Gmail API
+        result = await function_send_email_gmail_api(
+            request.app.state.client_postgres_asyncpg,
+            sender_email,
+            recipient_email,
+            subject,
+            body
+        )
+
+        return result
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}

@@ -25,5 +25,7 @@ import httpx
 from pydantic import BaseModel
 import asyncio
 
+from openai import OpenAI
+
 # Create router instance
 router = APIRouter()
