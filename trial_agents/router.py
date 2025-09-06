@@ -110,15 +110,24 @@ async def oauth2callback(request: Request):
 
     # Generate a JWT token for the user
     token = await function_token_encode(config_key_jwt,config_token_expire_sec,data[0],request.app.state.config_token_user_key_list)
+
+    query_params = {
+        "token": token,
+        "email": user_info.get("email"),
+        "name": user_info.get("name")
+    }
+    redirect_url = f"http://localhost:3000/dashboard?{urllib.parse.urlencode(query_params)}"
+
+    return RedirectResponse(url=redirect_url)
     # print("JWT Token:", token)
     # Return an HTML response confirming successful authorization and database storage
-    return {"status": 1,"token": token}
+    #              return {"status": 1,"token": token}
     # Alternative response (commented out): simple success message
     # return HTMLResponse("Authorization successful! Token saved to database. You can now send emails.")
 
 
 
-@router.post("/talk_with_ai_stream")
+@router.post("/talk_with_ai_stream_start")
 async def stream_request(request: Request, body: Message):
     try:
         sender_email = request.state.user["email"]
@@ -127,7 +136,53 @@ async def stream_request(request: Request, body: Message):
 
         prompt = f"Generate a professional email from {sender_email} to {', '.join(recipient_emails)} with the following context: {context}"
         
-        return await stream_ai_response_to_frontend(request.app.state.client_gemini, prompt)
+        # Build messages for email conversation
+        messages = await function_build_email_messages(
+            "You are a helpful assistant for writing detailed and professional emails. Focus on email composition and refinement.",
+            prompt
+        )
+        
+        # Create streaming response with session management
+        return await function_create_generic_stream_response(
+            request.app.state.client_gemini,
+            messages,
+            session_management_func=function_manage_email_session_start,
+            is_continuation=False
+        )
+        
+    except Exception as e:
+        print("Streaming error:", e)
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/talk_with_ai_stream_continue")
+async def stream_continue_request(request: Request, body: Message_Continue):
+    try:
+        sender_email = request.state.user["email"]
+        recipient_emails = body.recipient
+        session_id = body.session_id
+        context = body.content
+
+        prompt = f"Generate a better email following these rules: {context}"
+        
+        # Retrieve existing conversation session
+        session_data = await function_get_email_session(session_id)
+        
+        if session_data is None:
+            return {"success": False, "error": "Invalid session_id. Please start a new conversation."}
+        
+        # Get existing messages and add new user message
+        messages = session_data['messages'].copy()
+        messages.append({"role": "user", "content": prompt})
+        
+        # Create streaming response with session continuation
+        return await function_create_generic_stream_response(
+            request.app.state.client_gemini,
+            messages,
+            session_management_func=function_manage_email_session_continue,
+            session_id=session_id,
+            is_continuation=True
+        )
         
     except Exception as e:
         print("Streaming error:", e)

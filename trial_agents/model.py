@@ -10,3 +10,9 @@ class Message(BaseModel):
     recipient: List[str]
     subject : Optional[str] = None
     content: str
+
+class Message_Continue(BaseModel):
+    recipient: List[str]
+    subject : Optional[str] = None
+    session_id: str
+    content: str

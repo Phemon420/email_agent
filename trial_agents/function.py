@@ -1,6 +1,4 @@
-from http import client
 from package import *
-from fastapi.responses import StreamingResponse
 
 
 from fastapi import FastAPI
@@ -49,6 +47,10 @@ async def function_token_check(request,config_key_root,config_key_jwt,function_t
         elif api.startswith("/private") and not token:raise Exception("token missing")
         elif api.startswith("/admin") and not token:raise Exception("token missing")
     return user
+
+def function_client_read_openai(config_openai_key):
+   client_openai=OpenAI(api_key=config_openai_key,base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+   return client_openai
 
 #db connections establish
 import asyncpg
@@ -184,59 +186,250 @@ async def function_send_email_gmail_api(client_postgres_asyncpg, sender_email, r
     except Exception as e:
         # If any error occurs, return error response
         return {"success": False, "error": str(e)}
+
+
+
+# # Refactored streaming function for email conversation start
+# async def function_stream_ai_response_to_frontend(gemini_client, prompt_email_generator):
+#     """Stream AI response for new email conversation"""
     
+#     async def generate():
+#         try:
+#             # Create initial messages for email conversation
+#             messages = [
+#                 {"role": "system", "content": "You are a helpful assistant for writing detailed and professional emails. Focus on email composition and refinement."},
+#                 {"role": "user", "content": f"{prompt_email_generator}"}
+#             ]
+            
+#             # Generate session ID for this conversation
+#             session_id = str(uuid.uuid4())
+            
+#             # Use modular streaming generator
+#             generator = function_create_streaming_generator(
+#                 gemini_client, 
+#                 messages, 
+#                 session_id=session_id, 
+#                 is_continuation=False
+#             )
+            
+#             full_text = ""
+#             final_messages = []
+            
+#             # Stream the response
+#             async for item in generator:
+#                 if isinstance(item, tuple):  # Final result (full_text, messages)
+#                     full_text, final_messages = item
+#                     break
+#                 else:  # Streaming data
+#                     yield item
+            
+#             # Store the conversation session
+#             session_id = await function_manage_email_session_start(final_messages, full_text)
+            
+#             # Send final completion message
+#             yield f"data: {json.dumps({
+#                 'completed': True, 
+#                 'full_text': full_text, 
+#                 'session_id': session_id
+#             })}\n\n"
 
-def function_client_read_openai(config_openai_key):
-   client_openai=OpenAI(api_key=config_openai_key,base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-   return client_openai
+#         except Exception as e:
+#             yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+#     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-# Alternative streaming approach that sends data to frontend
-async def stream_ai_response_to_frontend(gemini_client, prompt_email_generator):
-    """Stream AI response directly to frontend as Server-Sent Events"""
+
+
+# # Refactored streaming function for email conversation continuation
+# async def function_stream_ai_response_to_frontend_continue(gemini_client, prompt_email_generator, session_id):
+#     """Stream conversation continuation using stored session"""
+    
+#     async def generate():
+#         try:
+#             # Retrieve the existing conversation session
+#             session_data = await function_get_email_session(session_id)
+            
+#             if session_data is None:
+#                 yield f"data: {json.dumps({'error': 'Invalid session_id. Please start a new conversation.'})}\n\n"
+#                 return
+
+#             # Get existing messages and add new user message
+#             messages = session_data['messages'].copy()
+#             messages.append({"role": "user", "content": prompt_email_generator})
+
+#             # Use modular streaming generator
+#             generator = function_create_streaming_generator(
+#                 gemini_client, 
+#                 messages, 
+#                 session_id=session_id, 
+#                 is_continuation=True
+#             )
+            
+#             full_text = ""
+#             final_messages = []
+            
+#             # Stream the response
+#             async for item in generator:
+#                 if isinstance(item, tuple):  # Final result (full_text, messages)
+#                     full_text, final_messages = item
+#                     break
+#                 else:  # Streaming data
+#                     yield item
+            
+#             # Update session with new messages
+#             await function_manage_email_session_continue(session_id, final_messages, full_text)
+            
+#             # Send final completion message
+#             yield f"data: {json.dumps({
+#                 'completed': True, 
+#                 'full_text': full_text, 
+#                 'session_id': session_id,
+#                 'is_continuation': True
+#             })}\n\n"
+
+#         except ValueError as ve:
+#             yield f"data: {json.dumps({'error': str(ve), 'is_continuation': True})}\n\n"
+#         except Exception as e:
+#             yield f"data: {json.dumps({'error': str(e), 'is_continuation': True})}\n\n"
+
+#     return StreamingResponse(generate(), media_type="text/event-stream")
+
+# # In-memory storage for email conversation sessions 
+email_chat_sessions = {}
+
+# ==== MODULAR STREAMING FUNCTIONS ====
+
+async def function_create_streaming_generator(gemini_client, messages, session_id=None, is_continuation=False):
+    """Generic streaming generator for AI responses"""
+    try:
+        response = gemini_client.chat.completions.create(
+            model="gemini-2.0-flash",
+            messages=messages,
+            stream=True
+        )
+
+        full_text = ""
+        
+        for chunk in response:
+            chunk_data = {}
+            
+            # Extract content from chunk
+            if (hasattr(chunk, 'choices') and 
+                chunk.choices and 
+                hasattr(chunk.choices[0], 'delta') and 
+                hasattr(chunk.choices[0].delta, 'content') and 
+                chunk.choices[0].delta.content):
+                
+                content = chunk.choices[0].delta.content
+                full_text += content
+                chunk_data['chunk'] = content
+                chunk_data['full_text'] = full_text
+                
+                if session_id:
+                    chunk_data['session_id'] = session_id
+                if is_continuation:
+                    chunk_data['is_continuation'] = True
+
+                print(content)
+            
+            if chunk_data:
+                yield f"data: {json.dumps(chunk_data)}\n\n"
+
+        # Yield final result for session management
+        yield (full_text, messages)
+
+    except Exception as e:
+        yield f"data: {json.dumps({'error': str(e), 'is_continuation': is_continuation})}\n\n"
+        yield ("", [])
+
+async def function_manage_email_session_start(messages, full_text, **kwargs):
+    """Create and store new email conversation session"""
+    session_id = str(uuid.uuid4())
+    
+    email_chat_sessions[session_id] = {
+        'messages': messages + [{"role": "assistant", "content": full_text}],
+        'created_at': time.time()
+    }
+    
+    return session_id
+
+async def function_manage_email_session_continue(messages, full_text, **kwargs):
+    """Update existing email conversation session"""
+    session_id = kwargs.get('session_id')
+    session_data = email_chat_sessions.get(session_id)
+    
+    if session_data is None:
+        raise ValueError("Invalid session_id")
+    
+    final_messages = messages + [{"role": "assistant", "content": full_text}]
+    email_chat_sessions[session_id] = {
+        'messages': final_messages,
+        'created_at': session_data['created_at'],
+        'updated_at': time.time()
+    }
+    
+    return session_id
+
+async def function_get_email_session(session_id):
+    """Retrieve email conversation session"""
+    return email_chat_sessions.get(session_id)
+
+async def function_build_email_messages(system_prompt, user_prompt):
+    """Build initial messages for email conversation"""
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+async def function_create_generic_stream_response(gemini_client, messages, session_management_func=None, **kwargs):
+    """Generic function to create streaming response with optional session management"""
     
     async def generate():
         try:
-            response = gemini_client.chat.completions.create(
-                model="gemini-2.0-flash",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant for writing a detailed and nice email."},
-                    {"role": "user", "content": f"{prompt_email_generator}."}
-                ],
-                stream=True
+            # Generate session ID if needed
+            session_id = kwargs.get('session_id', str(uuid.uuid4()) if session_management_func else None)
+            
+            # Use modular streaming generator
+            generator = function_create_streaming_generator(
+                gemini_client, 
+                messages, 
+                session_id=session_id, 
+                is_continuation=kwargs.get('is_continuation', False)
             )
-
+            
             full_text = ""
-            response_id = None
-
-            for chunk in response:
-                chunk_data = {}
-                
-                # Extract response_id
-                if hasattr(chunk, 'id') and chunk.id:
-                    response_id = chunk.id
-                    chunk_data['response_id'] = response_id
-
-                # Extract content
-                if (hasattr(chunk, 'choices') and 
-                    chunk.choices and 
-                    hasattr(chunk.choices[0], 'delta') and 
-                    hasattr(chunk.choices[0].delta, 'content') and 
-                    chunk.choices[0].delta.content):
-                    
-                    content = chunk.choices[0].delta.content
-                    full_text += content
-                    chunk_data['chunk'] = content
-                    chunk_data['full_text'] = full_text
-
-                # Send chunk to frontend
-                if chunk_data:
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
-
+            final_messages = []
+            
+            # Stream the response
+            async for item in generator:
+                if isinstance(item, tuple):  # Final result (full_text, messages)
+                    full_text, final_messages = item
+                    break
+                else:  # Streaming data
+                    yield item
+            
+            # Handle session management if provided
+            completion_data = {'completed': True, 'full_text': full_text}
+            
+            if session_management_func:
+                session_result = await session_management_func(final_messages, full_text, **kwargs)
+                if isinstance(session_result, str):  # session_id returned
+                    completion_data['session_id'] = session_result
+                elif isinstance(session_result, dict):  # additional data returned
+                    completion_data.update(session_result)
+            
+            # Add any additional completion data
+            completion_data.update(kwargs.get('completion_data', {}))
+            
             # Send final completion message
-            yield f"data: {json.dumps({'completed': True, 'full_text': full_text, 'response_id': response_id})}\n\n"
+            yield f"data: {json.dumps(completion_data)}\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            error_data = {'error': str(e)}
+            if kwargs.get('is_continuation'):
+                error_data['is_continuation'] = True
+            yield f"data: {json.dumps(error_data)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
