@@ -3,12 +3,15 @@
 import { useState } from 'react';
 import { Send, Copy, Edit3, Check } from 'lucide-react';
 import { authApi } from '@/lib/api';
+import { any } from 'zod';
 
 interface EmailComposerProps {
   initialContent?: string;
   recipients?: string[];
   sessionId?: string;
 }
+
+
 
 export default function EmailComposer({ 
   initialContent = '', 
@@ -60,7 +63,7 @@ export default function EmailComposer({
     try {
       // Send emails to all recipients
       const sendPromises = validRecipients.map(recipient => 
-        authApi.sendEmail({
+        (authApi as any).sendEmail({
           recipient: recipient.trim(),
           subject: subject.trim(),
           body: body.trim(),
