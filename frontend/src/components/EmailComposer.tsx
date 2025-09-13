@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = "force-dynamic";
+
 import { useState } from 'react';
 import { Send, Copy, Edit3, Check } from 'lucide-react';
 import { authApi } from '@/lib/api';
